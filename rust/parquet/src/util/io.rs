@@ -131,6 +131,8 @@ impl From<File> for FileRef {
     fn from(v: File) -> FileRef { FileRef::new(v) }
 }
 
+impl ParquetReader for FileRef { }
+
 //=========================================================================================================================
 
 
