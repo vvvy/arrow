@@ -19,7 +19,6 @@
 //! using row group writers and column writers respectively.
 
 use std::{
-    fs::File,
     io::{Seek, SeekFrom, Write},
     rc::Rc,
 };
@@ -39,7 +38,7 @@ use crate::file::{
     statistics::to_thrift as statistics_to_thrift, FOOTER_SIZE, PARQUET_MAGIC,
 };
 use crate::schema::types::{self, SchemaDescPtr, SchemaDescriptor, TypePtr};
-use crate::util::io::{FileSink, Position};
+use crate::util::io::{FileSink, Position, FileRef};
 
 // ----------------------------------------------------------------------
 // APIs for file & row group writers
@@ -112,13 +111,15 @@ pub trait RowGroupWriter {
     fn close(&mut self) -> Result<RowGroupMetaDataPtr>;
 }
 
+
+
 // ----------------------------------------------------------------------
 // Serialized impl for file & row group writers
 
 /// A serialized implementation for Parquet [`FileWriter`].
 /// See documentation on file writer for more information.
 pub struct SerializedFileWriter {
-    file: File,
+    file: FileRef,
     schema: TypePtr,
     descr: SchemaDescPtr,
     props: WriterPropertiesPtr,
@@ -131,11 +132,11 @@ pub struct SerializedFileWriter {
 impl SerializedFileWriter {
     /// Creates new file writer.
     pub fn new(
-        mut file: File,
+        file: FileRef,
         schema: TypePtr,
         properties: WriterPropertiesPtr,
     ) -> Result<Self> {
-        Self::start_file(&mut file)?;
+        Self::start_file(&file)?;
         Ok(Self {
             file,
             schema: schema.clone(),
@@ -149,8 +150,8 @@ impl SerializedFileWriter {
     }
 
     /// Writes magic bytes at the beginning of the file.
-    fn start_file(file: &mut File) -> Result<()> {
-        file.write(&PARQUET_MAGIC)?;
+    fn start_file(file: &FileRef) -> Result<()> {
+        file.borrow_mut().write(&PARQUET_MAGIC)?;
         Ok(())
     }
 
@@ -181,21 +182,23 @@ impl SerializedFileWriter {
             column_orders: None,
         };
 
+        let mut file = self.file.borrow_mut();
+
         // Write file metadata
-        let start_pos = self.file.seek(SeekFrom::Current(0))?;
+        let start_pos = file.seek(SeekFrom::Current(0))?;
         {
-            let mut protocol = TCompactOutputProtocol::new(&mut self.file);
+            let mut protocol = TCompactOutputProtocol::new(&mut *file);
             file_metadata.write_to_out_protocol(&mut protocol)?;
             protocol.flush()?;
         }
-        let end_pos = self.file.seek(SeekFrom::Current(0))?;
+        let end_pos = file.seek(SeekFrom::Current(0))?;
 
         // Write footer
         let mut footer_buffer: [u8; FOOTER_SIZE] = [0; FOOTER_SIZE];
         let metadata_len = (end_pos - start_pos) as i32;
         LittleEndian::write_i32(&mut footer_buffer, metadata_len);
         (&mut footer_buffer[4..]).write(&PARQUET_MAGIC)?;
-        self.file.write(&footer_buffer)?;
+        file.write(&footer_buffer)?;
         Ok(())
     }
 
@@ -256,7 +259,7 @@ impl FileWriter for SerializedFileWriter {
 pub struct SerializedRowGroupWriter {
     descr: SchemaDescPtr,
     props: WriterPropertiesPtr,
-    file: File,
+    file: FileRef,
     total_rows_written: Option<u64>,
     total_bytes_written: u64,
     column_index: usize,
@@ -269,13 +272,13 @@ impl SerializedRowGroupWriter {
     pub fn new(
         schema_descr: SchemaDescPtr,
         properties: WriterPropertiesPtr,
-        file: &File,
+        file: &FileRef,
     ) -> Self {
         let num_columns = schema_descr.num_columns();
         Self {
             descr: schema_descr,
             props: properties,
-            file: file.try_clone().unwrap(),
+            file: file.clone(),
             total_rows_written: None,
             total_bytes_written: 0,
             column_index: 0,
@@ -532,14 +535,14 @@ mod tests {
         statistics::{from_thrift, to_thrift, Statistics},
     };
     use crate::record::RowAccessor;
-    use crate::util::{memory::ByteBufferPtr, test_common::get_temp_file};
+    use crate::util::{memory::ByteBufferPtr, test_common::{get_temp_file,get_temp_file_ref}};
 
     #[test]
     fn test_file_writer_error_after_close() {
         let file = get_temp_file("test_file_writer_error_after_close", &[]);
         let schema = Rc::new(types::Type::group_type_builder("schema").build().unwrap());
         let props = Rc::new(WriterProperties::builder().build());
-        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let mut writer = SerializedFileWriter::new(file.into(), schema, props).unwrap();
         writer.close().unwrap();
         {
             let res = writer.next_row_group();
@@ -562,7 +565,7 @@ mod tests {
         let file = get_temp_file("test_file_writer_row_group_error_after_close", &[]);
         let schema = Rc::new(types::Type::group_type_builder("schema").build().unwrap());
         let props = Rc::new(WriterProperties::builder().build());
-        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let mut writer = SerializedFileWriter::new(file.into(), schema, props).unwrap();
         let mut row_group_writer = writer.next_row_group().unwrap();
         row_group_writer.close().unwrap();
 
@@ -588,7 +591,7 @@ mod tests {
                 .unwrap(),
         );
         let props = Rc::new(WriterProperties::builder().build());
-        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let mut writer = SerializedFileWriter::new(file.into(), schema, props).unwrap();
         let mut row_group_writer = writer.next_row_group().unwrap();
         let res = row_group_writer.close();
         assert!(res.is_err());
@@ -620,7 +623,7 @@ mod tests {
                 .unwrap(),
         );
         let props = Rc::new(WriterProperties::builder().build());
-        let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+        let mut writer = SerializedFileWriter::new(file.into(), schema, props).unwrap();
         let mut row_group_writer = writer.next_row_group().unwrap();
 
         let mut col_writer = row_group_writer.next_column().unwrap().unwrap();
@@ -646,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_file_writer_empty_file() {
-        let file = get_temp_file("test_file_writer_write_empty_file", &[]);
+        let file = get_temp_file_ref("test_file_writer_write_empty_file", &[]);
 
         let schema = Rc::new(
             types::Type::group_type_builder("schema")
@@ -660,7 +663,7 @@ mod tests {
         );
         let props = Rc::new(WriterProperties::builder().build());
         let mut writer =
-            SerializedFileWriter::new(file.try_clone().unwrap(), schema, props).unwrap();
+            SerializedFileWriter::new(file.clone(), schema, props).unwrap();
         writer.close().unwrap();
 
         let reader = SerializedFileReader::new(file).unwrap();
@@ -669,19 +672,19 @@ mod tests {
 
     #[test]
     fn test_file_writer_empty_row_groups() {
-        let file = get_temp_file("test_file_writer_write_empty_row_groups", &[]);
+        let file = get_temp_file_ref("test_file_writer_write_empty_row_groups", &[]);
         test_file_roundtrip(file, vec![]);
     }
 
     #[test]
     fn test_file_writer_single_row_group() {
-        let file = get_temp_file("test_file_writer_write_single_row_group", &[]);
+        let file = get_temp_file_ref("test_file_writer_write_single_row_group", &[]);
         test_file_roundtrip(file, vec![vec![1, 2, 3, 4, 5]]);
     }
 
     #[test]
     fn test_file_writer_multiple_row_groups() {
-        let file = get_temp_file("test_file_writer_write_multiple_row_groups", &[]);
+        let file = get_temp_file_ref("test_file_writer_write_multiple_row_groups", &[]);
         test_file_roundtrip(
             file,
             vec![
@@ -695,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_file_writer_multiple_large_row_groups() {
-        let file = get_temp_file("test_file_writer_multiple_large_row_groups", &[]);
+        let file = get_temp_file_ref("test_file_writer_multiple_large_row_groups", &[]);
         test_file_roundtrip(
             file,
             vec![vec![123; 1024], vec![124; 1000], vec![125; 15], vec![]],
@@ -906,7 +909,7 @@ mod tests {
 
     /// File write-read roundtrip.
     /// `data` consists of arrays of values for each row group.
-    fn test_file_roundtrip(file: File, data: Vec<Vec<i32>>) {
+    fn test_file_roundtrip(file: FileRef, data: Vec<Vec<i32>>) {
         let schema = Rc::new(
             types::Type::group_type_builder("schema")
                 .with_fields(&mut vec![Rc::new(
@@ -920,7 +923,7 @@ mod tests {
         );
         let props = Rc::new(WriterProperties::builder().build());
         let mut file_writer =
-            SerializedFileWriter::new(file.try_clone().unwrap(), schema, props).unwrap();
+            SerializedFileWriter::new(file.clone(), schema, props).unwrap();
 
         for subset in &data {
             let mut row_group_writer = file_writer.next_row_group().unwrap();

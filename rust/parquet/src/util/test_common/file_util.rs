@@ -66,3 +66,7 @@ pub fn get_temp_file(file_name: &str, content: &[u8]) -> fs::File {
     assert!(file.is_ok());
     file.unwrap()
 }
+
+pub fn get_temp_file_ref(file_name: &str, content: &[u8]) -> crate::util::io::FileRef {
+    get_temp_file(file_name, content).into()
+}

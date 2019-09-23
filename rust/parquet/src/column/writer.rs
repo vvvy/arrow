@@ -844,7 +844,7 @@ mod tests {
     use crate::schema::types::{ColumnDescriptor, ColumnPath, Type as SchemaType};
     use crate::util::{
         io::{FileSink, FileSource},
-        test_common::{get_temp_file, random_numbers_range},
+        test_common::{get_temp_file_ref, random_numbers_range},
     };
 
     #[test]
@@ -1391,7 +1391,7 @@ mod tests {
     fn test_column_writer_add_data_pages_with_dict() {
         // ARROW-5129: Test verifies that we add data page in case of dictionary encoding
         // and no fallback occured so far.
-        let file = get_temp_file("test_column_writer_add_data_pages_with_dict", &[]);
+        let file = get_temp_file_ref("test_column_writer_add_data_pages_with_dict", &[]);
         let sink = FileSink::new(&file);
         let page_writer = Box::new(SerializedPageWriter::new(sink));
         let props = Rc::new(
@@ -1484,7 +1484,7 @@ mod tests {
         def_levels: Option<&[i16]>,
         rep_levels: Option<&[i16]>,
     ) {
-        let file = get_temp_file(file_name, &[]);
+        let file = get_temp_file_ref(file_name, &[]);
         let sink = FileSink::new(&file);
         let page_writer = Box::new(SerializedPageWriter::new(sink));
 
