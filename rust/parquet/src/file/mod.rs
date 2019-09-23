@@ -47,7 +47,7 @@
 //! let schema = Rc::new(parse_message_type(message_type).unwrap());
 //! let props = Rc::new(WriterProperties::builder().build());
 //! let file = fs::File::create(&path).unwrap();
-//! let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
+//! let mut writer = SerializedFileWriter::new(file.into(), schema, props).unwrap();
 //! let mut row_group_writer = writer.next_row_group().unwrap();
 //! while let Some(mut col_writer) = row_group_writer.next_column().unwrap() {
 //!     // ... write values to a column writer
@@ -104,3 +104,5 @@ pub mod writer;
 
 const FOOTER_SIZE: usize = 8;
 const PARQUET_MAGIC: [u8; 4] = [b'P', b'A', b'R', b'1'];
+
+pub use crate::util::io::FileRef;
