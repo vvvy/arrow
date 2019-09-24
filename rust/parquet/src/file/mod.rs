@@ -105,4 +105,4 @@ pub mod writer;
 const FOOTER_SIZE: usize = 8;
 const PARQUET_MAGIC: [u8; 4] = [b'P', b'A', b'R', b'1'];
 
-pub use crate::util::io::FileRef;
+pub use crate::util::io::{ReadFileRef, WriteFileRef};

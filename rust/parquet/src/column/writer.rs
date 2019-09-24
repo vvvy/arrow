@@ -844,7 +844,7 @@ mod tests {
     use crate::schema::types::{ColumnDescriptor, ColumnPath, Type as SchemaType};
     use crate::util::{
         io::{FileSink, FileSource},
-        test_common::{get_temp_file_ref, random_numbers_range},
+        test_common::{get_temp_file_refs, random_numbers_range},
     };
 
     #[test]
@@ -1391,8 +1391,8 @@ mod tests {
     fn test_column_writer_add_data_pages_with_dict() {
         // ARROW-5129: Test verifies that we add data page in case of dictionary encoding
         // and no fallback occured so far.
-        let file = get_temp_file_ref("test_column_writer_add_data_pages_with_dict", &[]);
-        let sink = FileSink::new(&file);
+        let (wfile, rfile) = get_temp_file_refs("test_column_writer_add_data_pages_with_dict", &[]);
+        let sink = FileSink::new(&wfile);
         let page_writer = Box::new(SerializedPageWriter::new(sink));
         let props = Rc::new(
             WriterProperties::builder()
@@ -1406,7 +1406,7 @@ mod tests {
         let (bytes_written, _, _) = writer.close().unwrap();
 
         // Read pages and check the sequence
-        let source = FileSource::new(&file, 0, bytes_written as usize);
+        let source = FileSource::new(&rfile, 0, bytes_written as usize);
         let mut page_reader = Box::new(
             SerializedPageReader::new(
                 source,
@@ -1484,8 +1484,8 @@ mod tests {
         def_levels: Option<&[i16]>,
         rep_levels: Option<&[i16]>,
     ) {
-        let file = get_temp_file_ref(file_name, &[]);
-        let sink = FileSink::new(&file);
+        let (wfile, rfile) = get_temp_file_refs(file_name, &[]);
+        let sink = FileSink::new(&wfile);
         let page_writer = Box::new(SerializedPageWriter::new(sink));
 
         let max_def_level = match def_levels {
@@ -1517,7 +1517,7 @@ mod tests {
         assert_eq!(values_written, values.len());
         let (bytes_written, rows_written, column_metadata) = writer.close().unwrap();
 
-        let source = FileSource::new(&file, 0, bytes_written as usize);
+        let source = FileSource::new(&rfile, 0, bytes_written as usize);
         let page_reader = Box::new(
             SerializedPageReader::new(
                 source,

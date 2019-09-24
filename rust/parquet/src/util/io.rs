@@ -82,19 +82,71 @@ impl<R: ParquetReader> Position for FileSource<R> {
 }
 
 //=========================================================================================================================
+use crate::file::reader::Length;
+use std::{rc, cell};
+
+pub trait ParquetReaderLt: Read + Seek + Length {}
+impl<T: Read + Seek + Length> ParquetReaderLt for T {}
+
 
 #[derive(Clone)]
-pub struct FileRef {
-    h: std::rc::Rc<std::cell::RefCell<File>>
+pub struct ReadFileRef {
+    h: rc::Rc<cell::RefCell<ParquetReaderLt>>
 }
 
-impl FileRef {
-    pub fn new(file: File) -> Self { Self { h: std::rc::Rc::new(std::cell::RefCell::new(file)) } }
-    pub fn borrow_mut(&self) -> std::cell::RefMut<File> { self.h.borrow_mut() }
-    pub fn borrow(&self)-> std::cell::Ref<File> { self.h.borrow() }
+impl ReadFileRef {
+    pub fn new<R: ParquetReaderLt + 'static>(file: R) -> Self { Self { h: rc::Rc::new(cell::RefCell::new(file)) } }
+    pub fn borrow_mut(&self) -> cell::RefMut<ParquetReaderLt> { self.h.borrow_mut() }
+    pub fn borrow(&self)-> cell::Ref<ParquetReaderLt> { self.h.borrow() }
 }
 
-impl Write for FileRef {
+impl Read for ReadFileRef {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.borrow_mut().read(buf)
+    }
+}
+
+impl Seek for ReadFileRef {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.borrow_mut().seek(pos)
+    }
+}
+
+impl crate::file::reader::Length for ReadFileRef {
+    fn len(&self) -> u64 {
+        self.borrow().len()
+    }
+}
+
+impl crate::file::reader::TryClone for ReadFileRef {
+    fn try_clone(&self) -> crate::errors::Result<Self> {
+        Ok(self.clone())
+    }
+}
+
+impl From<File> for ReadFileRef {
+    fn from(v: File) -> Self { Self::new(v) }
+}
+
+impl ParquetReader for ReadFileRef { }
+
+//-------------------
+
+pub trait ParquetWriterLt: Write + Seek + Length {}
+impl<T: Write + Seek + Length> ParquetWriterLt for T {}
+
+#[derive(Clone)]
+pub struct WriteFileRef {
+    h: rc::Rc<cell::RefCell<ParquetWriterLt>>
+}
+
+impl WriteFileRef {
+    pub fn new<W: ParquetWriterLt + 'static>(file: W) -> Self { Self { h: rc::Rc::new(cell::RefCell::new(file)) } }
+    pub fn borrow_mut(&self) -> cell::RefMut<ParquetWriterLt> { self.h.borrow_mut() }
+    pub fn borrow(&self)-> cell::Ref<ParquetWriterLt> { self.h.borrow() }
+}
+
+impl Write for WriteFileRef {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.borrow_mut().write(buf)
     }
@@ -103,35 +155,15 @@ impl Write for FileRef {
     }
 }
 
-impl Read for FileRef {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.borrow_mut().read(buf)
-    }
-}
-
-impl Seek for FileRef {
+impl Seek for WriteFileRef {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         self.borrow_mut().seek(pos)
     }
 }
 
-impl crate::file::reader::Length for FileRef {
-    fn len(&self) -> u64 {
-        self.borrow().len()
-    }
+impl From<File> for WriteFileRef {
+    fn from(v: File) -> Self { Self::new(v) }
 }
-
-impl crate::file::reader::TryClone for FileRef {
-    fn try_clone(&self) -> crate::errors::Result<Self> {
-        Ok(self.clone())
-    }
-}
-
-impl From<File> for FileRef {
-    fn from(v: File) -> FileRef { FileRef::new(v) }
-}
-
-impl ParquetReader for FileRef { }
 
 //=========================================================================================================================
 
@@ -140,7 +172,7 @@ impl ParquetReader for FileRef { }
 /// Struct that represents `File` output stream with position tracking.
 /// Used as a sink in file writer.
 pub struct FileSink {
-    buf: BufWriter<FileRef>,
+    buf: BufWriter<WriteFileRef>,
     // This is not necessarily position in the underlying file,
     // but rather current position in the sink.
     pos: u64,
@@ -149,9 +181,9 @@ pub struct FileSink {
 impl FileSink {
     /// Creates new file sink.
     /// Position is set to whatever position file has.
-    pub fn new(file: &FileRef) -> Self {
-        let owned_file = file.clone();
-        let pos = owned_file.borrow_mut().seek(SeekFrom::Current(0)).unwrap();
+    pub fn new(file: &WriteFileRef) -> Self {
+        let mut owned_file = file.clone();
+        let pos = owned_file.seek(SeekFrom::Current(0)).unwrap();
         Self {
             buf: BufWriter::new(owned_file),
             pos,
@@ -188,7 +220,7 @@ impl<'a> Position for Cursor<&'a mut Vec<u8>> {
 mod tests {
     use super::*;
 
-    use crate::util::test_common::{get_temp_file_ref, get_test_file};
+    use crate::util::test_common::{get_temp_file_refs, get_test_file};
     use crate::file::reader::Length;
 
     #[test]
@@ -254,23 +286,24 @@ mod tests {
 
     #[test]
     fn test_io_write_with_pos() {
-        let mut file = get_temp_file_ref("file_sink_test", &[b'a', b'b', b'c']);
-        file.seek(SeekFrom::Current(3)).unwrap();
+        let (mut wfile, rfile) = get_temp_file_refs("file_sink_test", &[b'a', b'b', b'c']);
+        wfile.seek(SeekFrom::Current(3)).unwrap();
 
         // Write into sink
-        let mut sink = FileSink::new(&file);
+        let mut sink = FileSink::new(&wfile);
         assert_eq!(sink.pos(), 3);
 
         sink.write(&[b'd', b'e', b'f', b'g']).unwrap();
         assert_eq!(sink.pos(), 7);
 
         sink.flush().unwrap();
-        assert_eq!(sink.pos(), file.seek(SeekFrom::Current(0)).unwrap());
+        assert_eq!(sink.pos(), wfile.seek(SeekFrom::Current(0)).unwrap());
 
         // Read data using file chunk
         let mut res = vec![0u8; 7];
+        let filelen = rfile.len();
         let mut chunk =
-            FileSource::new(&file, 0, file.len() as usize);
+            FileSource::new(&rfile, 0, filelen as usize);
         chunk.read(&mut res[..]).unwrap();
 
         assert_eq!(res, vec![b'a', b'b', b'c', b'd', b'e', b'f', b'g']);

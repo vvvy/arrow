@@ -19,7 +19,7 @@
 //! using row group writers and column writers respectively.
 
 use std::{
-    io::{Seek, SeekFrom, Write},
+    io::{SeekFrom, Write},
     rc::Rc,
 };
 
@@ -38,7 +38,7 @@ use crate::file::{
     statistics::to_thrift as statistics_to_thrift, FOOTER_SIZE, PARQUET_MAGIC,
 };
 use crate::schema::types::{self, SchemaDescPtr, SchemaDescriptor, TypePtr};
-use crate::util::io::{FileSink, Position, FileRef};
+use crate::util::io::{FileSink, Position, WriteFileRef};
 
 // ----------------------------------------------------------------------
 // APIs for file & row group writers
@@ -119,7 +119,7 @@ pub trait RowGroupWriter {
 /// A serialized implementation for Parquet [`FileWriter`].
 /// See documentation on file writer for more information.
 pub struct SerializedFileWriter {
-    file: FileRef,
+    file: WriteFileRef,
     schema: TypePtr,
     descr: SchemaDescPtr,
     props: WriterPropertiesPtr,
@@ -132,7 +132,7 @@ pub struct SerializedFileWriter {
 impl SerializedFileWriter {
     /// Creates new file writer.
     pub fn new(
-        file: FileRef,
+        file: WriteFileRef,
         schema: TypePtr,
         properties: WriterPropertiesPtr,
     ) -> Result<Self> {
@@ -150,7 +150,7 @@ impl SerializedFileWriter {
     }
 
     /// Writes magic bytes at the beginning of the file.
-    fn start_file(file: &FileRef) -> Result<()> {
+    fn start_file(file: &WriteFileRef) -> Result<()> {
         file.borrow_mut().write(&PARQUET_MAGIC)?;
         Ok(())
     }
@@ -259,7 +259,7 @@ impl FileWriter for SerializedFileWriter {
 pub struct SerializedRowGroupWriter {
     descr: SchemaDescPtr,
     props: WriterPropertiesPtr,
-    file: FileRef,
+    file: WriteFileRef,
     total_rows_written: Option<u64>,
     total_bytes_written: u64,
     column_index: usize,
@@ -272,7 +272,7 @@ impl SerializedRowGroupWriter {
     pub fn new(
         schema_descr: SchemaDescPtr,
         properties: WriterPropertiesPtr,
-        file: &FileRef,
+        file: &WriteFileRef,
     ) -> Self {
         let num_columns = schema_descr.num_columns();
         Self {
@@ -535,7 +535,8 @@ mod tests {
         statistics::{from_thrift, to_thrift, Statistics},
     };
     use crate::record::RowAccessor;
-    use crate::util::{memory::ByteBufferPtr, test_common::{get_temp_file,get_temp_file_ref}};
+    use crate::util::{memory::ByteBufferPtr, test_common::{get_temp_file, get_temp_file_refs}};
+    use crate::util::io::ReadFileRef;
 
     #[test]
     fn test_file_writer_error_after_close() {
@@ -649,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_file_writer_empty_file() {
-        let file = get_temp_file_ref("test_file_writer_write_empty_file", &[]);
+        let (wfile, rfile) = get_temp_file_refs("test_file_writer_write_empty_file", &[]);
 
         let schema = Rc::new(
             types::Type::group_type_builder("schema")
@@ -662,31 +663,33 @@ mod tests {
                 .unwrap(),
         );
         let props = Rc::new(WriterProperties::builder().build());
-        let mut writer =
-            SerializedFileWriter::new(file.clone(), schema, props).unwrap();
-        writer.close().unwrap();
+        {
+            let mut writer =
+                SerializedFileWriter::new(wfile, schema, props).unwrap();
+            writer.close().unwrap();
+        }
 
-        let reader = SerializedFileReader::new(file).unwrap();
+        let reader = SerializedFileReader::new(rfile).unwrap();
         assert_eq!(reader.get_row_iter(None).unwrap().count(), 0);
     }
 
     #[test]
     fn test_file_writer_empty_row_groups() {
-        let file = get_temp_file_ref("test_file_writer_write_empty_row_groups", &[]);
-        test_file_roundtrip(file, vec![]);
+        let files = get_temp_file_refs("test_file_writer_write_empty_row_groups", &[]);
+        test_file_roundtrip(files, vec![]);
     }
 
     #[test]
     fn test_file_writer_single_row_group() {
-        let file = get_temp_file_ref("test_file_writer_write_single_row_group", &[]);
-        test_file_roundtrip(file, vec![vec![1, 2, 3, 4, 5]]);
+        let files = get_temp_file_refs("test_file_writer_write_single_row_group", &[]);
+        test_file_roundtrip(files, vec![vec![1, 2, 3, 4, 5]]);
     }
 
     #[test]
     fn test_file_writer_multiple_row_groups() {
-        let file = get_temp_file_ref("test_file_writer_write_multiple_row_groups", &[]);
+        let files = get_temp_file_refs("test_file_writer_write_multiple_row_groups", &[]);
         test_file_roundtrip(
-            file,
+            files,
             vec![
                 vec![1, 2, 3, 4, 5],
                 vec![1, 2, 3],
@@ -698,9 +701,9 @@ mod tests {
 
     #[test]
     fn test_file_writer_multiple_large_row_groups() {
-        let file = get_temp_file_ref("test_file_writer_multiple_large_row_groups", &[]);
+        let files = get_temp_file_refs("test_file_writer_multiple_large_row_groups", &[]);
         test_file_roundtrip(
-            file,
+            files,
             vec![vec![123; 1024], vec![124; 1000], vec![125; 15], vec![]],
         );
     }
@@ -909,7 +912,7 @@ mod tests {
 
     /// File write-read roundtrip.
     /// `data` consists of arrays of values for each row group.
-    fn test_file_roundtrip(file: FileRef, data: Vec<Vec<i32>>) {
+    fn test_file_roundtrip((wfile, rfile): (WriteFileRef, ReadFileRef), data: Vec<Vec<i32>>) {
         let schema = Rc::new(
             types::Type::group_type_builder("schema")
                 .with_fields(&mut vec![Rc::new(
@@ -922,8 +925,9 @@ mod tests {
                 .unwrap(),
         );
         let props = Rc::new(WriterProperties::builder().build());
+        {
         let mut file_writer =
-            SerializedFileWriter::new(file.clone(), schema, props).unwrap();
+            SerializedFileWriter::new(wfile, schema, props).unwrap();
 
         for subset in &data {
             let mut row_group_writer = file_writer.next_row_group().unwrap();
@@ -943,8 +947,9 @@ mod tests {
         }
 
         file_writer.close().unwrap();
+        }
 
-        let reader = SerializedFileReader::new(file).unwrap();
+        let reader = SerializedFileReader::new(rfile).unwrap();
         assert_eq!(reader.num_row_groups(), data.len());
         for i in 0..reader.num_row_groups() {
             let row_group_reader = reader.get_row_group(i).unwrap();

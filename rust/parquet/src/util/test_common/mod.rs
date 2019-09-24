@@ -27,5 +27,6 @@ pub use self::rand_gen::RandGen;
 
 pub use self::file_util::get_temp_file;
 pub use self::file_util::get_temp_file_ref;
+pub use self::file_util::get_temp_file_refs;
 pub use self::file_util::get_test_file;
 pub use self::file_util::get_test_path;

@@ -67,6 +67,12 @@ pub fn get_temp_file(file_name: &str, content: &[u8]) -> fs::File {
     file.unwrap()
 }
 
-pub fn get_temp_file_ref(file_name: &str, content: &[u8]) -> crate::util::io::FileRef {
+pub fn get_temp_file_ref(file_name: &str, content: &[u8]) -> crate::util::io::WriteFileRef {
     get_temp_file(file_name, content).into()
+}
+
+pub fn get_temp_file_refs(file_name: &str, content: &[u8]) -> (crate::util::io::WriteFileRef, crate::util::io::ReadFileRef) {
+    let f0 = get_temp_file(file_name, content);
+    let f1 = f0.try_clone().unwrap();
+    (f0.into(), f1.into())
 }
