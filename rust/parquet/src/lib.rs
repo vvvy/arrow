@@ -38,3 +38,5 @@ mod encodings;
 pub mod file;
 pub mod record;
 pub mod schema;
+
+pub use util::io::{ReadFileRef, WriteFileRef, ParquetReaderLt, ParquetWriterLt};

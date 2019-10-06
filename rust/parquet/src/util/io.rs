@@ -132,8 +132,8 @@ impl ParquetReader for ReadFileRef { }
 
 //-------------------
 
-pub trait ParquetWriterLt: Write + Seek + Length {}
-impl<T: Write + Seek + Length> ParquetWriterLt for T {}
+pub trait ParquetWriterLt: Write + Seek {}
+impl<T: Write + Seek> ParquetWriterLt for T {}
 
 #[derive(Clone)]
 pub struct WriteFileRef {
